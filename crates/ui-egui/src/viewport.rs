@@ -49,13 +49,23 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
     // Bake mode shows the 3D view alone, except while the skew brush needs the 2D view to paint in.
     let skew_painting = mode == crate::state::Mode::Baking && app.ui.skew_brush.on;
     let layout = if mode == crate::state::Mode::Painting || skew_painting { app.ui.layout } else { ViewLayout::Only3D };
+    let mid = full.center().x;
+    let left = Rect::from_min_max(full.min, pos2(mid - 1.0, full.max.y));
+    let right = Rect::from_min_max(pos2(mid + 1.0, full.min.y), full.max);
+    // What the views show: background compositing does those tiles first.
+    let uv_view = match layout {
+        ViewLayout::Only3D => None,
+        ViewLayout::Only2D => Some(full),
+        ViewLayout::Split => Some(right),
+    };
+    let focus = texturecraft_engine::Focus { view3d: layout != ViewLayout::Only2D, uv: uv_view.map(|r| visible_uv(app, r)) };
+    if let Some(g) = app.gpu.as_mut() {
+        g.set_focus(focus);
+    }
     match layout {
         ViewLayout::Only3D => view_3d(app, ui, full, &mut sync),
         ViewLayout::Only2D => view_2d(app, ui, full, &mut sync),
         ViewLayout::Split => {
-            let mid = full.center().x;
-            let left = Rect::from_min_max(full.min, pos2(mid - 1.0, full.max.y));
-            let right = Rect::from_min_max(pos2(mid + 1.0, full.min.y), full.max);
             view_3d(app, ui, left, &mut sync);
             view_2d(app, ui, right, &mut sync);
             ui.painter().line_segment([pos2(mid, full.top()), pos2(mid, full.bottom())], Stroke::new(2.0, tk.chrome));
@@ -932,6 +942,18 @@ fn pen_pressure(ui: &Ui) -> f32 {
         }
         _ => 1.0,
     }
+}
+
+/// The UV rectangle `[u0, v0, u1, v1]` of the active set a 2D view over `rect` shows (the
+/// inverse of `view_2d`'s mapping at the view's corners).
+fn visible_uv(app: &TextureCraftApp, rect: Rect) -> [f32; 4] {
+    let size = rect.size();
+    let set = app.session.doc.project.texture_sets.get(app.session.ts());
+    let [sx, sy] = texturecraft_render::uv_view_scale(size.x / size.y.max(1.0), app.ui.uv_zoom, set.map_or((1, 1), |t| t.size()));
+    let pan = app.ui.uv_pan;
+    let to_uv = |xc: f32, yc: f32| (((xc - pan[0]) / sx + 1.0) * 0.5, (1.0 - (yc - pan[1]) / sy) * 0.5);
+    let (a, b) = (to_uv(-1.0, 1.0), to_uv(1.0, -1.0));
+    [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
 }
 
 fn view_2d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut PendingSync) {

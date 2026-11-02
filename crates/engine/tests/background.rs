@@ -6,7 +6,7 @@
 use serde_json::{Value, json};
 use texturecraft_engine::geom::glam::Vec2;
 use texturecraft_engine::geom::primitives;
-use texturecraft_engine::{BackgroundCompositor, Session, execute};
+use texturecraft_engine::{BackgroundCompositor, Focus, Session, execute};
 
 /// Procedural fills, a masked layer with a generator and a blur, a folder, a painted layer.
 fn build() -> Session {
@@ -139,4 +139,54 @@ fn a_layout_change_during_a_job_drops_its_results() {
     bg.finish(&mut s);
     assert_eq!(s.caches[0].size, (256, 256));
     assert!(same_composites(&s, &want), "results for the old resolution were applied");
+}
+
+/// Tiles inside the UV rectangle `[u0, v0, u1, v1]` of set 0.
+fn tiles_in(s: &Session, r: [f32; 4]) -> std::collections::BTreeSet<(u32, u32)> {
+    let (w, h) = (s.caches[0].size.0 as f32, s.caches[0].size.1 as f32);
+    s.caches[0]
+        .covered_tiles
+        .iter()
+        .copied()
+        .filter(|&(tx, ty)| {
+            let (u0, v0, u1, v1) = (tx as f32 * 64.0 / w, ty as f32 * 64.0 / h, (tx + 1) as f32 * 64.0 / w, (ty + 1) as f32 * 64.0 / h);
+            u1 > r[0] && u0 < r[2] && v1 > r[1] && v0 < r[3]
+        })
+        .collect()
+}
+
+#[test]
+fn the_tiles_the_views_show_go_first() {
+    let want = reference(build());
+    let mut s = build();
+    s.active_set = 0;
+    dirty_all(&mut s);
+    let quarter = [0.0, 0.0, 0.5, 0.5];
+    let shown = tiles_in(&s, quarter);
+    assert!(!shown.is_empty() && shown.len() < s.caches[0].covered_tiles.len());
+    let mut bg = BackgroundCompositor::new();
+    bg.set_focus(Focus { view3d: false, uv: Some(quarter) });
+    bg.drive(&mut s, 30.0, || 0.0);
+    // The first job took exactly the tiles the 2D view shows; the rest wait.
+    let dirty = &s.caches[0].dirty;
+    assert!(shown.iter().all(|t| !dirty.contains(t)), "a shown tile was left for later");
+    assert!(s.caches[0].covered_tiles.iter().any(|t| !shown.contains(t) && dirty.contains(t)), "the first job took tiles not shown");
+    bg.finish(&mut s);
+    assert!(same_composites(&s, &want), "a composite in visibility order differs");
+}
+
+#[test]
+fn the_3d_view_shows_the_tiles_facing_the_camera() {
+    let mut s = build();
+    let view = Focus { view3d: true, uv: None };
+    let front = s.visible_tiles(0, &view);
+    let covered = s.caches[0].covered_tiles.len();
+    assert!(!front.is_empty() && front.len() < covered, "{} of {covered}", front.len());
+    // A 2D view showing the whole set beside the 3D view puts nothing more first.
+    assert_eq!(s.visible_tiles(0, &Focus { view3d: true, uv: Some([0.0, 0.0, 1.0, 1.0]) }), front);
+    // Half way round the sphere, mostly other tiles face the camera.
+    s.camera.yaw += std::f32::consts::PI;
+    let back = s.visible_tiles(0, &view);
+    let both = front.intersection(&back).count();
+    assert!(!back.is_empty() && both * 2 < front.len().min(back.len()), "front {}, back {}, both {both}", front.len(), back.len());
 }

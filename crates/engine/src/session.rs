@@ -57,6 +57,9 @@ pub struct SetCache {
     /// composite here takes a tile out, so a background result for it, older by then, is
     /// dropped; one still listed when it arrives is newer than what the tile shows.
     pub in_flight: BTreeSet<(u32, u32)>,
+    /// Sample points of each covered tile, to tell which tiles the views show (made on first
+    /// use; see [`crate::focus`]).
+    pub probes: std::sync::OnceLock<crate::focus::TileProbes>,
 }
 
 impl SetCache {
@@ -81,6 +84,7 @@ impl SetCache {
             chunk: 0,
             patterns: Arc::new(PatternCache::default()),
             in_flight: BTreeSet::new(),
+            probes: std::sync::OnceLock::new(),
         }
     }
 

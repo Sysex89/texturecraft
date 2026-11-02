@@ -81,6 +81,10 @@ pub struct GpuLink {
     /// The background compositor while background compositing is on (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     background: Option<texturecraft_engine::BackgroundCompositor>,
+    /// What the views show (background composites do those tiles first; unused on the web,
+    /// which composites in frame slices).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    focus: texturecraft_engine::Focus,
 }
 
 /// Compositing time per frame: a full recomposite of a large texture set spreads over frames.
@@ -129,6 +133,7 @@ pub fn init(rs: &egui_wgpu::RenderState, ctx: &egui::Context) -> GpuLink {
         composite_total: 0,
         #[cfg(not(target_arch = "wasm32"))]
         background: None,
+        focus: Default::default(),
     }
 }
 
@@ -145,6 +150,11 @@ impl GpuLink {
         (pending > 0 && self.composite_total > 0).then(|| 1.0 - pending as f32 / self.composite_total as f32)
     }
 
+    /// What the views show this frame (see [`texturecraft_engine::Focus`]).
+    pub fn set_focus(&mut self, focus: texturecraft_engine::Focus) {
+        self.focus = focus;
+    }
+
     /// A background composite is running (frames keep coming to collect it).
     pub fn background_busy(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
@@ -159,7 +169,9 @@ impl GpuLink {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if background {
-                self.background.get_or_insert_with(texturecraft_engine::BackgroundCompositor::new).drive(s, budget_ms, crate::now_ms);
+                let bg = self.background.get_or_insert_with(texturecraft_engine::BackgroundCompositor::new);
+                bg.set_focus(self.focus);
+                bg.drive(s, budget_ms, crate::now_ms);
                 return;
             }
             // Leaving background mode: what the job had not delivered is dirty again.

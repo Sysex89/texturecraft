@@ -349,6 +349,46 @@ fn composite_background(r: &mut Report, res: u32, budgets: [f64; 2]) {
     }
     r.add(format!("{res}²: background, total ({frames} frames)"), clock.elapsed(), Some(budgets[0]), "");
     r.add(format!("{res}²: background, worst frame's compositing"), worst, Some(budgets[1]), "applying the tiles that arrived (padded by the worker)");
+
+    // When the tiles the 3D view shows are done: in set order, then those first.
+    let view = texturecraft_engine::Focus { view3d: true, uv: None };
+    let shown: Vec<std::collections::BTreeSet<(u32, u32)>> = (0..s.set_count()).map(|ts| s.visible_tiles(ts, &view)).collect();
+    let n: usize = shown.iter().map(|v| v.len()).sum();
+    let covered: usize = s.caches.iter().map(|c| c.covered_tiles.len()).sum();
+    // Covered texels, the cost the tiles carry: per set, shown and all.
+    let texels = |c: &texturecraft_engine::SetCache, only: Option<&std::collections::BTreeSet<(u32, u32)>>| -> usize {
+        let w = c.gbuf.width;
+        (0..c.gbuf.tri.len()).filter(|&i| c.gbuf.covered(i) && only.is_none_or(|v| v.contains(&((i as u32 % w) / 64, (i as u32 / w) / 64)))).count()
+    };
+    let shown_texels: usize = s.caches.iter().zip(&shown).map(|(c, v)| texels(c, Some(v))).sum();
+    let all_texels: usize = s.caches.iter().map(|c| texels(c, None)).sum();
+    println!("  (the 3D view's tiles hold {:.0}% of the covered texels)", 100.0 * shown_texels as f64 / all_texels.max(1) as f64);
+    for (label, focus) in [("set order", texturecraft_engine::Focus::default()), ("3D view first", view)] {
+        let mut bg = texturecraft_engine::BackgroundCompositor::new();
+        bg.set_focus(focus);
+        invalidate(s, Caches::AfterEdit);
+        // A delivered tile is new data: a shown tile is done once its data is not what it was
+        // (tiles in flight include the ring a job pads, so they cannot tell).
+        let tile_ptr = |c: &texturecraft_engine::SetCache, t: (u32, u32)| {
+            c.composite.channels.values().next().and_then(|img| img.tile_handle(t.0, t.1)).map(|d| std::sync::Arc::as_ptr(d) as usize)
+        };
+        // Per set: each shown tile and the address of its data before.
+        type Before = Vec<((u32, u32), Option<usize>)>;
+        let before: Vec<Before> = s.caches.iter().zip(&shown).map(|(c, v)| v.iter().map(|&t| (t, tile_ptr(c, t))).collect()).collect();
+        let clock = Instant::now();
+        let mut seen: Option<Duration> = None;
+        while (s.pending_tiles() > 0 || bg.busy()) && clock.elapsed() < Duration::from_secs(120) {
+            bg.drive(s, 30.0, || 0.0);
+            let waiting = s.caches.iter().zip(&before).any(|(c, v)| v.iter().any(|&(t, p)| tile_ptr(c, t) == p));
+            if !waiting && seen.is_none() {
+                seen = Some(clock.elapsed());
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        let total = clock.elapsed();
+        let seen = seen.unwrap_or(total);
+        r.add(format!("{res}²: background, {label}: the 3D view's tiles done"), seen, None, format!("{n} of {covered} tiles; all done at {:.0} ms", ms(total)));
+    }
 }
 
 #[test]

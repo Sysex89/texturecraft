@@ -30,7 +30,7 @@ use texturecraft_geom::glam::Vec3;
 use texturecraft_geom::{Mesh, UvGBuffer};
 use texturecraft_texel::{DilationMap, TileData};
 
-use crate::Session;
+use crate::{Focus, Session};
 
 /// Tiles a worker composites between two deliveries (and cancellation checks).
 pub const JOB_CHUNK: usize = 64;
@@ -132,6 +132,8 @@ pub struct BackgroundCompositor {
     unavailable: bool,
     /// Jobs in a row that stopped before delivering every tile without being cancelled.
     failures: u32,
+    /// What the views show: those tiles go first (see [`BackgroundCompositor::set_focus`]).
+    focus: Focus,
 }
 
 /// Jobs in a row that may stop early before background compositing is given up.
@@ -140,6 +142,13 @@ const MAX_FAILURES: u32 = 3;
 impl BackgroundCompositor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// What the views show, for the next jobs: a job takes the dirty tiles the views show
+    /// first (the active set's, then the others'), the rest after. Without a focus, a job
+    /// takes a whole set.
+    pub fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
     }
 
     /// A job is running.
@@ -184,16 +193,34 @@ impl BackgroundCompositor {
         }
     }
 
-    /// Start a job on the first texture set (the active one first) with tiles to composite.
+    /// Start a job: the dirty tiles the views show (the active set first), else every dirty
+    /// tile of the first set (the active one first) that has some.
     fn dispatch(&mut self, s: &mut Session) {
         let active = s.ts();
-        let order = std::iter::once(active).chain((0..s.caches.len()).filter(|t| *t != active));
-        let Some(ts) = order.into_iter().find(|t| s.caches.get(*t).is_some_and(|c| !c.dirty.is_empty() || !c.settle.is_empty())) else { return };
+        let order: Vec<usize> = std::iter::once(active).chain((0..s.caches.len()).filter(|t| *t != active)).collect();
+        let pending = |c: &crate::SetCache| c.dirty.iter().chain(&c.settle).copied().collect::<BTreeSet<(u32, u32)>>();
+        let shown = (!self.focus.is_none())
+            .then(|| {
+                order.iter().find_map(|&ts| {
+                    let c = s.caches.get(ts)?;
+                    if c.dirty.is_empty() && c.settle.is_empty() {
+                        return None;
+                    }
+                    let tiles: BTreeSet<(u32, u32)> = s.visible_tiles(ts, &self.focus).intersection(&pending(c)).copied().collect();
+                    (!tiles.is_empty()).then_some((ts, tiles))
+                })
+            })
+            .flatten();
+        let Some((ts, tiles)) = shown.or_else(|| order.iter().find_map(|&ts| s.caches.get(ts).map(|c| (ts, pending(c))).filter(|(_, t)| !t.is_empty()))) else {
+            return;
+        };
         let Ok(set) = s.doc.project.texture_set(ts) else { return };
         let channels = set.channel_list();
         let Some(c) = s.caches.get_mut(ts) else { return };
-        let mut tiles: BTreeSet<(u32, u32)> = std::mem::take(&mut c.dirty);
-        tiles.append(&mut c.settle);
+        for t in &tiles {
+            c.dirty.remove(t);
+            c.settle.remove(t);
+        }
         let job_tiles: Vec<(u32, u32)> = tiles.iter().copied().collect();
         c.in_flight.extend(tile_neighbourhood(&c.composite, &job_tiles));
         let job = Job {

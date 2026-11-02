@@ -167,6 +167,7 @@ pub fn filter(id: &str, size: usize) -> Option<Vec<Option<Sample>>> {
         preview: None,
         images: &images,
         bounds: mesh.bounds(),
+        patterns: None,
     };
     let mut out = texturecraft_compose::Composite::new(&CHANNELS, res);
     texturecraft_compose::composite_tiles(&inp, &mut out, &texturecraft_compose::all_tiles(res, res));

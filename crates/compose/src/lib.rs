@@ -11,6 +11,7 @@ pub mod below;
 pub mod display;
 pub mod eval;
 pub mod pattern;
+pub mod patterns;
 pub mod store;
 
 pub use below::{BelowCache, StackKey};
@@ -19,4 +20,5 @@ pub use eval::{
     Composite, Inputs, PaintTarget, Stencil, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached, covered_tiles, effect_histogram, flatten_layer,
     mask_image, pad_tiles,
 };
+pub use patterns::{PATTERN_BUDGET, PatternCache};
 pub use store::{BakedMaps, ImageRes, ImageStore, PixelStore};

@@ -133,19 +133,43 @@ fn tiles_of(s: &Session) -> usize {
     s.caches.iter().map(|c| c.dirty.len()).sum()
 }
 
-/// Every tile of every set dirty, with the per-tile cache of the layers below the selected one
-/// kept (`warm`) or emptied as any bake or stack edit empties it (cold, what users wait on).
-fn invalidate(s: &mut Session, warm: bool) {
-    for ts in 0..s.set_count() {
-        invalidate_set(s, ts, warm);
+/// What a recomposite finds cached.
+#[derive(Clone, Copy, PartialEq)]
+enum Caches {
+    /// Nothing: the first composite after opening a project.
+    None,
+    /// Pattern values, not the stack below the selected layer: what a bake or a stack edit
+    /// leaves (what users wait on).
+    AfterEdit,
+    /// Both, as far as their budgets hold them.
+    Warm,
+}
+
+impl Caches {
+    fn label(self) -> &'static str {
+        match self {
+            Caches::None => "nothing cached",
+            Caches::AfterEdit => "after an edit",
+            Caches::Warm => "warm",
+        }
     }
 }
 
-fn invalidate_set(s: &mut Session, ts: usize, warm: bool) {
+/// Every tile of every set dirty, finding `caches`.
+fn invalidate(s: &mut Session, caches: Caches) {
+    for ts in 0..s.set_count() {
+        invalidate_set(s, ts, caches);
+    }
+}
+
+fn invalidate_set(s: &mut Session, ts: usize, caches: Caches) {
     let c = &mut s.caches[ts];
     c.invalidate_all();
-    if !warm {
+    if caches != Caches::Warm {
         c.below.clear();
+    }
+    if caches == Caches::None {
+        c.patterns.clear();
     }
 }
 
@@ -237,23 +261,25 @@ fn bake_gpu_vs_cpu() {
 // ---------------------------------------------------------------------------------------------
 // Compositing
 
-/// Full recomposite of the sample project (every texture set) at 2K and 4K: cold (the frame
-/// after a bake, opening a project or any stack edit), then warm (the below-the-selected-layer
-/// cache filled, as far as its byte budget holds it), the display conversion the viewport
-/// uploads, and the UI's cold budgeted path (a 30 ms budget per frame).
+/// Full recomposite of the sample project (every texture set) at 2K and 4K with nothing
+/// cached (opening a project), after an edit (a bake or stack edit: pattern values kept) and
+/// warm, then the display conversion the viewport uploads and the UI's budgeted path (30 ms
+/// frames) after an edit.
 fn composite_full(r: &mut Report, res: u32, budgets: [f64; 3]) {
     let mut h = sample(res);
     let s = &mut h.session;
-    for warm in [false, true] {
-        invalidate(s, warm);
+    for caches in [Caches::None, Caches::AfterEdit, Caches::Warm] {
+        invalidate(s, caches);
         let tiles = tiles_of(s);
         let t = Instant::now();
         s.update();
         let took = t.elapsed();
         let per_tile = format!("{tiles} tiles, {:.0} µs/tile", took.as_secs_f64() * 1e6 / tiles.max(1) as f64);
-        let (label, budget) = if warm { ("warm", None) } else { ("cold", Some(budgets[0])) };
-        r.add(format!("{res}²: full recomposite, {} sets, {label}", s.set_count()), took, budget, per_tile);
+        let budget = (caches == Caches::None).then_some(budgets[0]);
+        r.add(format!("{res}²: full recomposite, {} sets, {}", s.set_count(), caches.label()), took, budget, per_tile);
     }
+    let pattern_mb = s.caches.iter().map(|c| c.patterns.bytes()).sum::<usize>() as f64 / 1048576.0;
+    println!("  (pattern cache {pattern_mb:.0} MB)");
     let cached = s.caches.iter().map(|c| c.below.len()).sum::<usize>();
     let covered = s.caches.iter().map(|c| c.covered_tiles.len()).sum::<usize>();
     let below_mb = s.caches.iter().map(|c| c.below.bytes()).sum::<usize>() as f64 / 1048576.0;
@@ -262,7 +288,7 @@ fn composite_full(r: &mut Report, res: u32, budgets: [f64; 3]) {
     let bytes = display_all(s);
     r.add(format!("{res}²: display conversion of every tile"), t.elapsed(), Some(budgets[1]), format!("{:.0} MB", bytes as f64 / 1048576.0));
 
-    invalidate(s, false);
+    invalidate(s, Caches::AfterEdit);
     let clock = Instant::now();
     let now = || clock.elapsed().as_secs_f64() * 1000.0;
     let (mut frames, mut worst) = (0, Duration::ZERO);
@@ -330,7 +356,7 @@ fn composite_per_layer() {
         // A cold composite of this set only (the others stay clean): with the below cache
         // filled, a recomposite would only evaluate the selected layer.
         let full = |h: &mut Headless| {
-            invalidate_set(&mut h.session, ts, false);
+            invalidate_set(&mut h.session, ts, Caches::None);
             let t = Instant::now();
             h.session.update();
             t.elapsed()
@@ -371,7 +397,7 @@ fn composite_per_layer() {
 fn cold_median(h: &mut Headless, ts: usize) -> Duration {
     let mut runs: Vec<Duration> = (0..3)
         .map(|_| {
-            invalidate_set(&mut h.session, ts, false);
+            invalidate_set(&mut h.session, ts, Caches::None);
             let t = Instant::now();
             h.session.update();
             t.elapsed()

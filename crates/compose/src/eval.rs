@@ -16,6 +16,7 @@ use texturecraft_texel::{DilationMap, TILE, TILE_AREA, TileImage, from_u16, nois
 
 use crate::below::{Band, BelowCache, Level};
 use crate::pattern::{Coords, decal_uv, image_samples, procedural, world_noise};
+use crate::patterns::{BandPatterns, PatternCache};
 use crate::store::{BakedMaps, ImageStore, PixelStore, decode};
 
 const NCH: usize = Channel::ALL.len();
@@ -98,6 +99,9 @@ pub struct Inputs<'a> {
     pub images: &'a ImageStore,
     /// Mesh bounds, for scale-independent procedural coordinates.
     pub bounds: (Vec3, Vec3),
+    /// Procedural pattern values kept between composites of this texture set's layout
+    /// (`gbuf`): only for the set's own composites, never for another layout or size.
+    pub patterns: Option<&'a PatternCache>,
 }
 
 impl Inputs<'_> {
@@ -933,6 +937,8 @@ struct Texel<'a, 'b> {
     anchors: Vec<(LayerId, Acc)>,
     /// Where `eval` takes layer masks and content from.
     tape: Tape<'b>,
+    /// Pattern values of the band this texel is in (off outside `composite_block`).
+    pats: BandPatterns<'a>,
 }
 
 /// What a layer contributes (its mask, its content value and coverage per channel): evaluated
@@ -965,7 +971,7 @@ impl<'t> Tape<'t> {
 
 impl<'a, 'b> Texel<'a, 'b> {
     fn new(inp: &'b Inputs<'a>, x: u32, y: u32, o: usize, stroke: f32) -> Self {
-        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), tape: Tape::Off }
+        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), tape: Tape::Off, pats: BandPatterns::default() }
     }
 
     /// Run `f` with `tape` as this texel's tape.
@@ -1077,8 +1083,15 @@ impl<'a, 'b> Texel<'a, 'b> {
         match s {
             Source::Uniform(v) => *v,
             Source::Procedural { pattern, low, high } => {
-                let (c, proj, _) = self.projected(proj);
-                let t = procedural(pattern, proj, &c);
+                let t = match self.pats.get(pattern, proj, self.o) {
+                    Some(t) => t,
+                    None => {
+                        let (c, projected, _) = self.projected(proj);
+                        let t = procedural(pattern, projected, &c);
+                        self.pats.put(pattern, proj, self.o, t);
+                        t
+                    }
+                };
                 mix3(*low, *high, t)
             }
             Source::Image { name, normal_format } => {
@@ -1589,6 +1602,11 @@ fn composite_block(
     let stride: usize = lanes.iter().map(|l| l.n).sum();
     let nlev = split.map_or(0, <[Level]>::len);
     let defaults: Acc = Channel::ALL.map(Channel::default_value);
+    // The pattern cache's guard: values hold for this layout and these mesh bounds only.
+    let salt: std::sync::Arc<str> = format!("{}x{}|{:?}", inp.gbuf.width, inp.gbuf.height, inp.bounds).into();
+    if let Some(p) = inp.patterns {
+        p.begin_pass();
+    }
     // Tiles split into bands of rows, so a handful of tiles still keeps every thread busy.
     let bands = TILE / BAND;
     let tasks: Vec<((u32, u32), u32)> = tiles.iter().flat_map(|t| (0..bands).map(move |b| (*t, b))).collect();
@@ -1621,6 +1639,7 @@ fn composite_block(
             let preview_tile = inp.preview.and_then(|p| p.alpha.tile(tx, ty));
             let mut bufs: Vec<Vec<u16>> = channels.iter().map(|c| vec![0u16; rows * c.components()]).collect();
             let mut anchors = Vec::new();
+            let mut pats = BandPatterns::new(inp.patterns, salt.clone(), (tx, ty), band, (band * BAND * TILE) as usize, rows);
             let mut any = false;
             for ly in band * BAND..(band + 1) * BAND {
                 let y = ty * TILE + ly;
@@ -1641,8 +1660,9 @@ fn composite_block(
                     if covered {
                         any = true;
                         let mut tex = Texel::new(inp, x, y, o, stroke_at(preview_tile, o));
-                        // Reuse one anchor buffer per band.
+                        // Reuse one anchor buffer and the pattern values per band.
                         tex.anchors = std::mem::take(&mut anchors);
+                        tex.pats = std::mem::take(&mut pats);
                         match &levels {
                             Some(levels) => {
                                 // The texel's stream starts with the stack at each level.
@@ -1669,6 +1689,7 @@ fn composite_block(
                         }
                         anchors = tex.anchors;
                         anchors.clear();
+                        pats = tex.pats;
                     }
                     for (l, buf) in lanes.iter().zip(&mut bufs) {
                         let v = acc.get(l.ch).copied().unwrap_or([0.0; 3]);
@@ -1681,6 +1702,7 @@ fn composite_block(
                     }
                 }
             }
+            pats.publish();
             let cache = if let Tape::Record(t) = tape { Some(t) } else { None };
             (bufs, cache, any)
         })
@@ -2070,6 +2092,7 @@ mod tests {
             preview,
             images: &images,
             bounds: f.mesh.bounds(),
+            patterns: None,
         };
         let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), 64);
         composite_tiles(&inp, &mut out, &all_tiles(64, 64));
@@ -2436,6 +2459,7 @@ soft {soft:?}"
             preview: None,
             images: &images,
             bounds: f.mesh.bounds(),
+            patterns: None,
         };
         let flat = flatten_layer(&inp, id, &all_tiles(64, 64)).unwrap();
         assert!(flat.iter().all(|(c, _, _)| *c == Channel::Roughness));
@@ -2497,6 +2521,7 @@ soft {soft:?}"
                 preview: None,
                 images: &images,
                 bounds: f.mesh.bounds(),
+                patterns: None,
             };
             let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), 64);
             composite_tiles(&inp, &mut out, &all_tiles(64, 64));

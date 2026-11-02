@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use texturecraft_compose::{BakedMaps, BelowCache, Composite, PaintTarget, PixelStore, StackKey, StrokePreview, covered_tiles, pad_tiles};
+use texturecraft_compose::{BakedMaps, BelowCache, Composite, PaintTarget, PatternCache, PixelStore, StackKey, StrokePreview, covered_tiles, pad_tiles};
 use texturecraft_core::{Channel, Layer, LayerId, LayerKind, Project, TextureSet};
 use texturecraft_geom::glam::Vec2;
 use texturecraft_geom::{Bvh, Mesh, OrbitCamera, UvGBuffer};
@@ -49,6 +49,9 @@ pub struct SetCache {
     pub below: BelowCache,
     /// Tiles per composite chunk that fit the last frame's budget (0: not measured yet).
     pub chunk: usize,
+    /// Procedural pattern values of this layout, kept across composites (bakes and stack
+    /// edits leave them valid); a new layout gets a new cache with the new `SetCache`.
+    pub patterns: PatternCache,
 }
 
 impl SetCache {
@@ -71,6 +74,7 @@ impl SetCache {
             revision: 0,
             below: BelowCache::default(),
             chunk: 0,
+            patterns: PatternCache::default(),
         }
     }
 
@@ -729,6 +733,7 @@ impl Session {
                     preview,
                     images: &self.images,
                     bounds: self.mesh.bounds(),
+                    patterns: Some(&cache.patterns),
                 };
                 texturecraft_compose::composite_tiles_cached(&inputs, &mut cache.composite, &tiles, Some(&mut cache.below));
                 // The composited tiles and the neighbours their padding reached change.
@@ -817,6 +822,7 @@ impl Session {
             preview: None,
             images: &self.images,
             bounds: self.mesh.bounds(),
+            patterns: Some(&cache.patterns),
         })
     }
 
@@ -843,7 +849,7 @@ impl Session {
     /// hot-layer caches.
     pub fn memory(&self) -> Memory {
         let composites = self.caches.iter().flat_map(|c| c.composite.channels.values()).map(texturecraft_texel::TileImage::bytes).sum();
-        Memory { pixels: self.doc.pixels.bytes(), composites, cache: self.caches.iter().map(|c| c.below.bytes()).sum() }
+        Memory { pixels: self.doc.pixels.bytes(), composites, cache: self.caches.iter().map(|c| c.below.bytes() + c.patterns.bytes()).sum() }
     }
 }
 

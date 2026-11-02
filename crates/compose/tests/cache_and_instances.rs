@@ -4,7 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use texturecraft_compose::{BelowCache, Composite, Inputs, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached};
+use texturecraft_compose::{
+    BelowCache, Composite, Inputs, PaintTarget, PatternCache, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached,
+};
 use texturecraft_core::{
     BlendMode, Channel, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural,
     ProceduralKind, Project, Projection, Source, TextureSet,
@@ -90,7 +92,7 @@ fn heavy_stack(f: &mut Fixture) -> LayerId {
 }
 
 fn inputs<'a>(f: &'a Fixture, ts: usize, images: &'a texturecraft_compose::ImageStore, baked: &'a texturecraft_compose::BakedMaps) -> Inputs<'a> {
-    Inputs { project: &f.project, ts, mesh: &f.mesh, gbuf: &f.gbuf, pixels: &f.pixels, baked, preview: None, images, bounds: f.mesh.bounds() }
+    Inputs { project: &f.project, ts, mesh: &f.mesh, gbuf: &f.gbuf, pixels: &f.pixels, baked, preview: None, images, bounds: f.mesh.bounds(), patterns: None }
 }
 
 fn run(f: &Fixture, ts: usize, tiles: &[(u32, u32)], below: Option<&mut BelowCache>) -> Composite {
@@ -148,6 +150,49 @@ fn below_cache_and_blocks_match_the_full_composite_exactly() {
     run(&f, 0, &all_tiles(RES, RES), Some(&mut cache));
     assert!(!cache.is_empty());
     assert!(run(&f, 0, &all_tiles(RES, RES), Some(&mut cache)) == reference(&f, 0));
+}
+
+/// Composite set 0 with `patterns` (and optionally the below cache) over every tile.
+fn run_patterns(f: &Fixture, patterns: &PatternCache, below: Option<&mut BelowCache>) -> Composite {
+    let (images, baked) = (Default::default(), Default::default());
+    let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), RES);
+    let inp = Inputs { patterns: Some(patterns), ..inputs(f, 0, &images, &baked) };
+    composite_tiles_cached(&inp, &mut out, &all_tiles(RES, RES), below);
+    out
+}
+
+#[test]
+fn pattern_cache_composites_exactly_and_never_serves_an_edited_pattern() {
+    let mut f = fixture();
+    let top = heavy_stack(&mut f);
+    let want = reference(&f, 0);
+    let patterns = PatternCache::default();
+    assert!(run_patterns(&f, &patterns, None) == want, "a composite filling the pattern cache differs");
+    assert!(!patterns.is_empty(), "procedural fills are cached");
+    let bytes = patterns.bytes();
+    assert!(run_patterns(&f, &patterns, None) == want, "a composite from cached patterns differs");
+    assert_eq!(patterns.bytes(), bytes, "nothing new to cache the second time");
+    // With the below cache too, cold and warm.
+    let mut below = BelowCache::default();
+    below.set_hot(Some(top));
+    assert!(run_patterns(&f, &patterns, Some(&mut below)) == want);
+    assert!(run_patterns(&f, &patterns, Some(&mut below)) == want);
+    // An edited pattern is another pattern: its old values are never used.
+    let low = f.project.texture_sets[0].stack[0];
+    if let LayerKind::Fill(fl) = &mut f.project.layer_mut(low).unwrap().kind
+        && let Some(Source::Procedural { pattern, .. }) = fl.sources.get_mut(&Channel::BaseColor)
+    {
+        pattern.scale *= 3.0;
+        pattern.seed += 1;
+    }
+    let want = reference(&f, 0);
+    assert!(run_patterns(&f, &patterns, None) == want, "an edited pattern was served stale values");
+    // A budget smaller than the set keeps what fits and still composites exactly.
+    let small = PatternCache::with_budget(bytes / 4);
+    for _ in 0..3 {
+        assert!(run_patterns(&f, &small, None) == want, "a composite under a small budget differs");
+        assert!(small.bytes() <= small.budget);
+    }
 }
 
 #[test]

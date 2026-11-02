@@ -118,6 +118,10 @@ pub struct Prefs {
     /// Where autosaves, smart materials, presets, templates and layouts go (desktop; read at
     /// startup). Empty or relative: `Documents/TextureCraft`.
     pub data_folder: String,
+    /// Composite texture sets on a worker thread instead of in slices of each frame (desktop;
+    /// `texturecraft_engine::BackgroundCompositor`): the interface stays fluid while large
+    /// sets recomposite. Strokes still composite in the frame.
+    pub background_compositing: bool,
 }
 
 impl Default for Prefs {
@@ -132,6 +136,7 @@ impl Default for Prefs {
             system_title_bar: false,
             start_window: true,
             data_folder: String::new(),
+            background_compositing: false,
         }
     }
 }

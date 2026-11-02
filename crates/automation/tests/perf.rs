@@ -317,6 +317,56 @@ fn composite_sample_4k() {
     r.finish();
 }
 
+/// The full recomposite after an edit, frame-sliced (30 ms budget, as the UI does by default)
+/// against background compositing driven every 8 ms (a frame's time with the UI's own work):
+/// total time, and what compositing costs the worst frame. Budgets: [background total, worst
+/// background frame].
+fn composite_background(r: &mut Report, res: u32, budgets: [f64; 2]) {
+    let mut h = sample(res);
+    let s = &mut h.session;
+    invalidate(s, Caches::AfterEdit);
+    let clock = Instant::now();
+    let now = || clock.elapsed().as_secs_f64() * 1000.0;
+    let (mut frames, mut worst) = (0, Duration::ZERO);
+    while s.pending_tiles() > 0 && frames < 100_000 {
+        let t = Instant::now();
+        s.update_for(30.0, now);
+        worst = worst.max(t.elapsed());
+        frames += 1;
+    }
+    r.add(format!("{res}²: frame-sliced, total ({frames} frames)"), clock.elapsed(), None, format!("worst frame {:.1} ms", ms(worst)));
+
+    let mut bg = texturecraft_engine::BackgroundCompositor::new();
+    invalidate(s, Caches::AfterEdit);
+    let clock = Instant::now();
+    let (mut frames, mut worst) = (0, Duration::ZERO);
+    while (s.pending_tiles() > 0 || bg.busy()) && frames < 100_000 {
+        let t = Instant::now();
+        bg.drive(s, 30.0, || 0.0);
+        worst = worst.max(t.elapsed());
+        frames += 1;
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    r.add(format!("{res}²: background, total ({frames} frames)"), clock.elapsed(), Some(budgets[0]), "");
+    r.add(format!("{res}²: background, worst frame's compositing"), worst, Some(budgets[1]), "applying the tiles that arrived (padded by the worker)");
+}
+
+#[test]
+#[ignore]
+fn composite_background_2k() {
+    let mut r = Report::new("composite_background_2k");
+    composite_background(&mut r, 2048, [1_300.0, 8.0]);
+    r.finish();
+}
+
+#[test]
+#[ignore]
+fn composite_background_4k() {
+    let mut r = Report::new("composite_background_4k");
+    composite_background(&mut r, 4096, [4_700.0, 8.0]);
+    r.finish();
+}
+
 /// Editing the stack through the commands the UI runs: selecting the bottom layer (the
 /// below-cache now caches everything but it) and toggling its visibility (every layer above it
 /// recomposites).

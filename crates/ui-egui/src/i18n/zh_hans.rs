@@ -1,6 +1,11 @@
 //! Simplified Chinese UI text: (English key, translation). Keys are the English strings passed to `tr`.
 
 pub const TABLE: &[(&str, &str)] = &[
+    ("Background compositing", "后台合成"),
+    (
+        "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+        "在单独的线程中更新纹理集，使大型纹理集重新合成时界面保持流畅。关：工作分摊到各帧中。",
+    ),
     ("\"{layer}\" has no paint yet: the filter changes what you paint on it.", "“{layer}”尚未绘制：滤镜会改变你在其上绘制的内容。"),
     ("0 turns autosave off. Copies go to {folder}", "设为 0 可关闭自动保存。副本保存到 {folder}"),
     ("2D view only", "仅 2D 视图"),

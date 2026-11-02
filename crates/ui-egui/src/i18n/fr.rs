@@ -115,6 +115,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Axis", "Axe"),
     ("Back to painting", "Retour à la peinture"),
     ("Backface culling", "Élimination des faces arrière"),
+    ("Background compositing", "Composition en arrière-plan"),
     ("Bake Mesh Maps", "Précalculer les cartes de maillage"),
     ("Bake mesh maps", "Précalculer les cartes de maillage"),
     (
@@ -903,6 +904,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ("UV tiles (UDIM)", "Tuiles UV (UDIM)"),
     ("Undo", "Annuler"),
     ("Uniform value", "Valeur uniforme"),
+    (
+        "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+        "Met à jour les ensembles de textures dans un thread séparé, pour que l'interface reste fluide pendant la recomposition des grands ensembles. Désactivé : le travail est réparti sur les images.",
+    ),
     ("Use an equirectangular .hdr or .exr image as the environment", "Utiliser une image équirectangulaire .hdr ou .exr comme environnement"),
     (
         "Use as the brush alpha (or drag it onto the viewport or brush properties)",

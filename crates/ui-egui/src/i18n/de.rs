@@ -1,6 +1,11 @@
 //! German UI text: (English key, translation). Keys are the English strings passed to `tr`.
 
 pub const TABLE: &[(&str, &str)] = &[
+    ("Background compositing", "Compositing im Hintergrund"),
+    (
+        "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+        "Aktualisiert Textursets in einem eigenen Thread, damit die Oberfläche flüssig bleibt, während große Sets neu zusammengesetzt werden. Aus: Die Arbeit wird auf die Frames verteilt.",
+    ),
     ("\"{layer}\" has no paint yet: the filter changes what you paint on it.", "\"{layer}\" ist noch nicht bemalt: Der Filter verändert, was du darauf malst."),
     ("0 turns autosave off. Copies go to {folder}", "0 deaktiviert die automatische Speicherung. Kopien werden in {folder} abgelegt"),
     ("2D view only", "Nur 2D-Ansicht"),

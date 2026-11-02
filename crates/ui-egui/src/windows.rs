@@ -568,6 +568,14 @@ fn settings(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 "Size of the textures the viewport shows: lower uses less GPU memory with large texture sets. Painting and export keep full resolution.",
             ));
             ui.end_row();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.label(tr("Background compositing"));
+                ui.checkbox(&mut p.background_compositing, "").on_hover_text(tr(
+                    "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+                ));
+                ui.end_row();
+            }
         });
         ui.add_space(8.0);
         #[cfg(not(target_arch = "wasm32"))]

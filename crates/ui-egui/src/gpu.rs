@@ -78,6 +78,9 @@ pub struct GpuLink {
     pub adapter: String,
     /// Most tiles waiting to be composited since compositing last caught up (progress).
     composite_total: usize,
+    /// The background compositor while background compositing is on (desktop).
+    #[cfg(not(target_arch = "wasm32"))]
+    background: Option<texturecraft_engine::BackgroundCompositor>,
 }
 
 /// Compositing time per frame: a full recomposite of a large texture set spreads over frames.
@@ -124,6 +127,8 @@ pub fn init(rs: &egui_wgpu::RenderState, ctx: &egui::Context) -> GpuLink {
         aux: BTreeMap::new(),
         adapter: format!("{} ({:?})", info.name, info.backend),
         composite_total: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        background: None,
     }
 }
 
@@ -140,14 +145,42 @@ impl GpuLink {
         (pending > 0 && self.composite_total > 0).then(|| 1.0 - pending as f32 / self.composite_total as f32)
     }
 
-    /// `spent_ms`: time this frame already took before the sync.
-    pub fn sync(&mut self, s: &mut Session, aux_map: Option<AuxView>, shift: u32, spent_ms: f64) -> SceneSync {
+    /// A background composite is running (frames keep coming to collect it).
+    pub fn background_busy(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.background.as_ref().is_some_and(texturecraft_engine::BackgroundCompositor::busy);
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    /// Composite this frame's share: in the background when `background` (desktop), else in
+    /// a slice of `budget_ms`.
+    fn composite(&mut self, s: &mut Session, background: bool, budget_ms: f64) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if background {
+                self.background.get_or_insert_with(texturecraft_engine::BackgroundCompositor::new).drive(s, budget_ms, crate::now_ms);
+                return;
+            }
+            // Leaving background mode: what the job had not delivered is dirty again.
+            if let Some(mut bg) = self.background.take() {
+                bg.cancel(s);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = background;
+        s.update_for(budget_ms, crate::now_ms);
+    }
+
+    /// `spent_ms`: time this frame already took before the sync; `background`: composite on a
+    /// worker thread (desktop, `Prefs::background_compositing`).
+    pub fn sync(&mut self, s: &mut Session, aux_map: Option<AuxView>, shift: u32, spent_ms: f64, background: bool) -> SceneSync {
         let start = crate::now_ms();
         let mut queued = 0usize;
         let left = |queued: usize| FRAME_BUDGET_MS - spent_ms - (crate::now_ms() - start) - queued as f64 * UPLOAD_MS_PER_TILE;
         let pending = s.pending_tiles();
         self.composite_total = if pending == 0 { 0 } else { self.composite_total.max(pending) };
-        s.update_for(COMPOSITE_BUDGET_MS.min(left(0)).max(MIN_SLICE_MS), crate::now_ms);
+        self.composite(s, background, COMPOSITE_BUDGET_MS.min(left(0)).max(MIN_SLICE_MS));
         let mut out = SceneSync::default();
         if self.lost.swap(false, Ordering::AcqRel) {
             self.mesh_id = 0;

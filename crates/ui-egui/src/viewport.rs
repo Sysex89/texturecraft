@@ -159,12 +159,15 @@ fn add_callback(app: &mut TextureCraftApp, ui: &Ui, rect: Rect, frame: Frame, sy
     let scene = match (sync.0.take(), app.gpu.as_mut()) {
         (Some(aux), Some(g)) => {
             let t0 = crate::now_ms();
-            let scene = g.sync(&mut app.session, aux, u32::from(app.ui.prefs.viewport_texture.min(2)), f64::from(app.profiler.logic_ms));
+            let shift = u32::from(app.ui.prefs.viewport_texture.min(2));
+            let scene = g.sync(&mut app.session, aux, shift, f64::from(app.profiler.logic_ms), app.ui.prefs.background_compositing);
+            let busy = g.background_busy();
             let reports = g.take_reports();
             app.profiler.sync_ms += (crate::now_ms() - t0) as f32;
             gpu_report_toasts(app, reports);
-            // Display tiles left for later frames (the frame budget ran out).
-            if app.session.caches.iter().any(|c| !c.upload.is_empty()) {
+            // Display tiles left for later frames (the frame budget ran out), or a background
+            // composite to collect.
+            if app.session.caches.iter().any(|c| !c.upload.is_empty()) || busy {
                 ui.ctx().request_repaint();
             }
             Some(scene)

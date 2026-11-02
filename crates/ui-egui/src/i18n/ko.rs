@@ -112,6 +112,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Axis", "축"),
     ("Back to painting", "페인팅으로 돌아가기"),
     ("Backface culling", "후면 컬링"),
+    ("Background compositing", "백그라운드 합성"),
     ("Bake Mesh Maps", "메시 맵 베이크"),
     ("Bake mesh maps", "메시 맵 베이크"),
     ("Bake mesh maps (F8) for curvature, AO and thickness based generators.", "곡률, AO, 두께 기반 제너레이터를 사용하려면 메시 맵을 베이크하세요 (F8)."),
@@ -864,6 +865,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ("UV tiles (UDIM)", "UV 타일 (UDIM)"),
     ("Undo", "실행 취소"),
     ("Uniform value", "균일 값"),
+    (
+        "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+        "텍스처 세트를 별도 스레드에서 업데이트하여 큰 세트를 다시 합성하는 동안에도 인터페이스가 부드럽게 유지됩니다. 끄기: 작업을 프레임마다 나누어 처리합니다.",
+    ),
     ("Use an equirectangular .hdr or .exr image as the environment", "등장방형 .hdr 또는 .exr 이미지를 환경으로 사용합니다"),
     ("Use as the brush alpha (or drag it onto the viewport or brush properties)", "브러시 알파로 사용합니다 (또는 뷰포트나 브러시 속성으로 드래그)"),
     ("Use low poly mesh as high poly mesh", "로우 폴리 메시를 하이 폴리 메시로 사용"),

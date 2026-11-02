@@ -1801,12 +1801,14 @@ fn store_below(cache: &mut [f32], lanes: &[Lane], stride: usize, o: usize, acc: 
 /// UV padding for display: fill uncovered texels in `tiles` and their neighbours from their
 /// nearest covered texel. Returns the tiles it wrote.
 pub fn pad_tiles(out: &mut Composite, dmap: &DilationMap, tiles: &[(u32, u32)]) -> std::collections::BTreeSet<(u32, u32)> {
-    let mut written = std::collections::BTreeSet::new();
-    let (w, h) = (out.resolution, out.height);
-    if (dmap.width, dmap.height) != (w, h) {
-        return written;
-    }
-    let (nx, ny) = (w.div_ceil(TILE) as i64, h.div_ceil(TILE) as i64);
+    let set: Vec<(u32, u32)> = tile_neighbourhood(out, tiles).into_iter().collect();
+    pad_exact(out, dmap, &set)
+}
+
+/// `tiles` and their 8 neighbours inside the composite: what padding them can change (the
+/// padding reaches less than a tile).
+pub fn tile_neighbourhood(out: &Composite, tiles: &[(u32, u32)]) -> std::collections::BTreeSet<(u32, u32)> {
+    let (nx, ny) = (out.resolution.div_ceil(TILE) as i64, out.height.div_ceil(TILE) as i64);
     let mut set = std::collections::BTreeSet::new();
     for &(tx, ty) in tiles {
         for dy in -1..=1i64 {
@@ -1818,7 +1820,18 @@ pub fn pad_tiles(out: &mut Composite, dmap: &DilationMap, tiles: &[(u32, u32)]) 
             }
         }
     }
-    let set: Vec<(u32, u32)> = set.into_iter().collect();
+    set
+}
+
+/// Fill the uncovered texels of exactly `tiles` from their nearest covered texel (which may lie
+/// in a neighbouring tile: pad a tile once its neighbours are composited). Returns the tiles it
+/// wrote.
+pub fn pad_exact(out: &mut Composite, dmap: &DilationMap, set: &[(u32, u32)]) -> std::collections::BTreeSet<(u32, u32)> {
+    let mut written = std::collections::BTreeSet::new();
+    let (w, h) = (out.resolution, out.height);
+    if (dmap.width, dmap.height) != (w, h) {
+        return written;
+    }
     for img in out.channels.values_mut() {
         let comps = img.comps();
         let src: &TileImage = img;

@@ -9,6 +9,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod auto_rebake;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod background;
 pub mod bake_cmds;
 pub mod brush_preset_cmds;
 pub mod camera_cmds;
@@ -46,6 +48,8 @@ pub mod tool_cmds;
 pub mod uv_tile_cmds;
 pub mod view_cmds;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use background::BackgroundCompositor;
 pub use bake_cmds::{BakeMesh, BakeMeshes, BakeTask};
 pub use commands::{CommandSpec, command_specs, execute, find};
 pub use path_tool::PathState;

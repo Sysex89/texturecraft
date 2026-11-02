@@ -1,6 +1,11 @@
 //! Arabic UI text: (English key, translation). Keys are the English strings passed to `tr`.
 
 pub const TABLE: &[(&str, &str)] = &[
+    ("Background compositing", "التركيب في الخلفية"),
+    (
+        "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+        "يحدّث مجموعات الخامات في خيط منفصل، فتبقى الواجهة سلسة أثناء إعادة تركيب المجموعات الكبيرة. معطل: يُوزَّع العمل على الإطارات.",
+    ),
     ("\"{layer}\" has no paint yet: the filter changes what you paint on it.", "لا يوجد رسم على \"{layer}\" بعد: يغيّر المرشح ما ترسمه عليها."),
     ("0 turns autosave off. Copies go to {folder}", "0 يعطل الحفظ التلقائي. تُحفظ النُسخ في {folder}"),
     ("2D view only", "عرض ثنائي الأبعاد فقط"),

@@ -115,6 +115,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Axis", "軸"),
     ("Back to painting", "ペイントに戻る"),
     ("Backface culling", "背面カリング"),
+    ("Background compositing", "バックグラウンド合成"),
     ("Bake Mesh Maps", "メッシュマップのベイク"),
     ("Bake mesh maps", "メッシュマップをベイク"),
     (
@@ -873,6 +874,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ("UV tiles (UDIM)", "UVタイル (UDIM)"),
     ("Undo", "元に戻す"),
     ("Uniform value", "均一値"),
+    (
+        "Updates texture sets on a separate thread, so the interface stays smooth while large sets recomposite. Off: the work is spread over the frames.",
+        "テクスチャセットを別スレッドで更新し、大きなセットの再合成中もインターフェースを滑らかに保ちます。オフ: 処理を各フレームに分散します。",
+    ),
     ("Use an equirectangular .hdr or .exr image as the environment", "正距円筒図法の .hdr または .exr 画像を環境として使用"),
     (
         "Use as the brush alpha (or drag it onto the viewport or brush properties)",

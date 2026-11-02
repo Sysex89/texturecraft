@@ -151,6 +151,23 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
     }
 }
 
+/// A triplanar plane whose weight, times the gain applied after blending, stays under this is
+/// not evaluated: even two skipped planes change a value by less than 1/65536, under the u16
+/// step layers are stored at. With sharp blends most texels need one plane, not three.
+const TRIPLANAR_SKIP: f32 = 1.0 / 131_072.0;
+
+/// Normalized triplanar blend weights (YZ, XZ, XY planes) for normal `nrm`; planes too light
+/// to change a 0..1 value scaled by `gain` afterwards weigh 0 (see [`TRIPLANAR_SKIP`]).
+fn triplanar_weights(nrm: Vec3, sharpness: f32, gain: f32) -> Vec3 {
+    let w = nrm.abs().powf(sharpness.max(1.0));
+    let w = w / (w.x + w.y + w.z).max(1e-6);
+    let floor = TRIPLANAR_SKIP / gain.max(1.0);
+    Vec3::select(w.cmplt(Vec3::splat(floor)), Vec3::ZERO, w)
+}
+
+/// Steepest slope of sRGB decoding (at 1.0: 2.4 / 1.055), the gain on triplanar image samples.
+const SRGB_GAIN: f32 = 2.3;
+
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -173,11 +190,10 @@ pub fn procedural(pr: &Procedural, proj: &Projection, c: &Coords) -> f32 {
         }
         Projection::Triplanar { scale, sharpness, offset } => {
             let p = c.pos * *scale * s + Vec3::from(*offset);
-            let w = c.nrm.abs().powf(sharpness.max(1.0));
-            let w = w / (w.x + w.y + w.z).max(1e-6);
-            raw(pr.kind, Vec3::new(p.z, p.y, 0.0), pr.seed) * w.x
-                + raw(pr.kind, Vec3::new(p.x, p.z, 0.0), pr.seed) * w.y
-                + raw(pr.kind, Vec3::new(p.x, p.y, 0.0), pr.seed) * w.z
+            // `shape` scales the blend by the contrast.
+            let w = triplanar_weights(c.nrm, *sharpness, pr.contrast);
+            let planes = [(w.x, Vec3::new(p.z, p.y, 0.0)), (w.y, Vec3::new(p.x, p.z, 0.0)), (w.z, Vec3::new(p.x, p.y, 0.0))];
+            planes.into_iter().filter(|(w, _)| *w > 0.0).map(|(w, q)| raw(pr.kind, q, pr.seed) * w).sum()
         }
         Projection::Planar { scale, axis, offset } => {
             let p = c.pos * *scale * s + Vec3::from(*offset);
@@ -222,8 +238,8 @@ pub fn image_samples(proj: &Projection, c: &Coords) -> [(Vec2, f32); 3] {
         }
         Projection::Triplanar { scale, sharpness, offset } => {
             let p = c.pos * *scale + Vec3::from(*offset);
-            let w = c.nrm.abs().powf(sharpness.max(1.0));
-            let w = w / (w.x + w.y + w.z).max(1e-6);
+            // Zero-weight slots are not sampled.
+            let w = triplanar_weights(c.nrm, *sharpness, SRGB_GAIN);
             [(Vec2::new(p.z, -p.y), w.x), (Vec2::new(p.x, p.z), w.y), (Vec2::new(p.x, -p.y), w.z)]
         }
         Projection::Planar { scale, axis, offset } => {
@@ -335,6 +351,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Skipping light triplanar planes stays within a u16 step of evaluating all three, at any
+    /// contrast; near an axis it does skip.
+    #[test]
+    fn triplanar_plane_skipping_stays_under_one_u16_step() {
+        let full = |pr: &Procedural, sharpness: f32, c: &Coords| {
+            let p = c.pos * pr.scale;
+            let w = c.nrm.abs().powf(sharpness);
+            let w = w / (w.x + w.y + w.z);
+            shape(
+                pr,
+                raw(pr.kind, Vec3::new(p.z, p.y, 0.0), pr.seed) * w.x
+                    + raw(pr.kind, Vec3::new(p.x, p.z, 0.0), pr.seed) * w.y
+                    + raw(pr.kind, Vec3::new(p.x, p.y, 0.0), pr.seed) * w.z,
+            )
+        };
+        let mut worst = 0.0f32;
+        for k in ProceduralKind::ALL {
+            for contrast in [1.0, 4.0, 16.0] {
+                let pr = Procedural { contrast, ..Procedural::new(k) };
+                for sharpness in [1.0, 4.0, 8.0, 16.0] {
+                    let proj = Projection::Triplanar { scale: 1.0, sharpness, offset: [0.0; 3] };
+                    for i in 0..400 {
+                        // Normals from on an axis to fully oblique, positions spread around.
+                        let t = i as f32 / 400.0;
+                        let nrm = Vec3::new(t * 1.3, 1.0, (t * 7.0).sin() * t).normalize();
+                        let c = Coords { uv: Vec2::ZERO, pos: Vec3::new((t * 11.0).sin(), (t * 5.0).cos(), t * 3.0), nrm };
+                        worst = worst.max((procedural(&pr, &proj, &c) - full(&pr, sharpness, &c)).abs());
+                    }
+                }
+            }
+        }
+        assert!(worst < 1.0 / 65535.0, "worst difference {worst}");
+        let near_axis = triplanar_weights(Vec3::new(0.2, 1.0, 0.1).normalize(), 8.0, 1.0);
+        assert_eq!((near_axis.x, near_axis.z), (0.0, 0.0), "{near_axis}");
+        assert_eq!(triplanar_weights(Vec3::ONE.normalize(), 8.0, 16.0), Vec3::splat(1.0 / 3.0));
     }
 
     #[test]

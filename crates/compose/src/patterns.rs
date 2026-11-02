@@ -168,8 +168,9 @@ fn compact(g: &mut Inner) {
 #[derive(Default)]
 pub(crate) struct BandPatterns<'c> {
     cache: Option<&'c PatternCache>,
-    /// Layout guard of the key.
-    salt: Arc<str>,
+    /// Layout guard of the key. An `Option`, so the default (a `Texel`'s, moved in and out per
+    /// texel) allocates nothing: an empty `Arc<str>` would, twice per texel.
+    salt: Option<Arc<str>>,
     tile: (u32, u32),
     band: u32,
     /// Tile offset of the band's first texel, and its texel count.
@@ -188,7 +189,7 @@ struct Slot {
 
 impl<'c> BandPatterns<'c> {
     pub(crate) fn new(cache: Option<&'c PatternCache>, salt: Arc<str>, tile: (u32, u32), band: u32, start: usize, len: usize) -> Self {
-        BandPatterns { cache, salt, tile, band, start, len, slots: Vec::new() }
+        BandPatterns { cache, salt: cache.map(|_| salt), tile, band, start, len, slots: Vec::new() }
     }
 
     fn slot(&mut self, pattern: &Procedural, proj: &Projection) -> Option<&mut Slot> {
@@ -197,7 +198,8 @@ impl<'c> BandPatterns<'c> {
         let i = match self.slots.iter().position(|s| s.id == id) {
             Some(i) => i,
             None => {
-                let key = Key { pattern: format!("{}|{pattern:?}|{proj:?}", self.salt).into(), tile: self.tile, band: self.band };
+                let key =
+                    Key { pattern: format!("{}|{pattern:?}|{proj:?}", self.salt.as_deref().unwrap_or_default()).into(), tile: self.tile, band: self.band };
                 let cached = cache.get(&key).filter(|v| v.len() == self.len);
                 self.slots.push(Slot { id, key, cached, fresh: None });
                 self.slots.len() - 1

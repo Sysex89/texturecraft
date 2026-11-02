@@ -151,6 +151,25 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
     }
 }
 
+/// `v` raised to a triplanar `sharpness` (at least 1): whole sharpnesses up to 16 (the usual
+/// ones) by repeated squaring, a few multiplies instead of three `powf` calls per texel.
+#[inline]
+fn sharpen(v: Vec3, sharpness: f32) -> Vec3 {
+    let s = sharpness.max(1.0);
+    if s > 16.0 || s.fract() != 0.0 {
+        return v.powf(s);
+    }
+    let (mut n, mut base, mut out) = (s as u32, v, Vec3::ONE);
+    while n > 0 {
+        if n & 1 == 1 {
+            out *= base;
+        }
+        base *= base;
+        n >>= 1;
+    }
+    out
+}
+
 /// A triplanar plane whose weight, times the gain applied after blending, stays under this is
 /// not evaluated: even two skipped planes change a value by less than 1/65536, under the u16
 /// step layers are stored at. With sharp blends most texels need one plane, not three.
@@ -159,7 +178,7 @@ const TRIPLANAR_SKIP: f32 = 1.0 / 131_072.0;
 /// Normalized triplanar blend weights (YZ, XZ, XY planes) for normal `nrm`; planes too light
 /// to change a 0..1 value scaled by `gain` afterwards weigh 0 (see [`TRIPLANAR_SKIP`]).
 fn triplanar_weights(nrm: Vec3, sharpness: f32, gain: f32) -> Vec3 {
-    let w = nrm.abs().powf(sharpness.max(1.0));
+    let w = sharpen(nrm.abs(), sharpness);
     let w = w / (w.x + w.y + w.z).max(1e-6);
     let floor = TRIPLANAR_SKIP / gain.max(1.0);
     Vec3::select(w.cmplt(Vec3::splat(floor)), Vec3::ZERO, w)
@@ -387,7 +406,25 @@ mod tests {
         assert!(worst < 1.0 / 65535.0, "worst difference {worst}");
         let near_axis = triplanar_weights(Vec3::new(0.2, 1.0, 0.1).normalize(), 8.0, 1.0);
         assert_eq!((near_axis.x, near_axis.z), (0.0, 0.0), "{near_axis}");
-        assert_eq!(triplanar_weights(Vec3::ONE.normalize(), 8.0, 16.0), Vec3::splat(1.0 / 3.0));
+        // An oblique normal skips no plane.
+        let oblique = triplanar_weights(Vec3::ONE.normalize(), 8.0, 16.0);
+        assert!((oblique - Vec3::splat(1.0 / 3.0)).abs().max_element() < 1e-6, "{oblique}");
+    }
+
+    /// Repeated squaring agrees with `powf` to a few ulps for whole sharpnesses, and falls back
+    /// to `powf` for the rest.
+    #[test]
+    fn sharpen_matches_powf() {
+        for i in 0..=100 {
+            let v = Vec3::new(i as f32 / 100.0, 1.0 - i as f32 / 100.0, (i as f32 * 0.37).fract());
+            for s in [0.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 16.0] {
+                let (a, b) = (sharpen(v, s), v.powf(s.max(1.0)));
+                assert!((a - b).abs().max_element() <= 1e-6, "{v} ^ {s}: {a} vs {b}");
+            }
+            for s in [2.5, 17.0, 64.0] {
+                assert_eq!(sharpen(v, s), v.powf(s));
+            }
+        }
     }
 
     #[test]

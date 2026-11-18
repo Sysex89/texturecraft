@@ -31,6 +31,7 @@ impl PickupSnapshot {
             preview: None,
             images: &self.images,
             bounds: self.bounds,
+            patterns: None,
         })
     }
 }

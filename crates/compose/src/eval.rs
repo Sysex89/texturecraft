@@ -23,6 +23,7 @@ use crate::curvature_sizes::CurvatureSizes;
 use crate::held_fields::HeldFields;
 use crate::pattern::{Coords, decal_uv_symmetric, image_samples, pattern_pixels, procedural_in, world_noise};
 use crate::pattern_context::PatternContext;
+use crate::patterns::{BandPatterns, PatternCache};
 use crate::store::{BakedMaps, ImageStore, PixelStore, decode};
 
 const NCH: usize = Channel::ALL.len();
@@ -112,6 +113,9 @@ pub struct Inputs<'a> {
     pub images: &'a ImageStore,
     /// Mesh bounds, for scale-independent procedural coordinates.
     pub bounds: (Vec3, Vec3),
+    /// Procedural pattern values kept between composites of this texture set's layout
+    /// (`gbuf`): only for the set's own composites, never for another layout or size.
+    pub patterns: Option<&'a PatternCache>,
 }
 
 impl Inputs<'_> {
@@ -1285,6 +1289,8 @@ struct Texel<'a, 'b> {
     anchors: Vec<(LayerId, Acc, bool)>,
     /// Where `eval` takes layer masks and content from.
     tape: Tape<'b>,
+    /// Pattern values of the band this texel is in (off outside `composite_block`).
+    pats: BandPatterns<'a>,
 }
 
 /// What a layer contributes (its mask, its content value and coverage per channel): evaluated
@@ -1317,7 +1323,7 @@ impl<'t> Tape<'t> {
 
 impl<'a, 'b> Texel<'a, 'b> {
     fn new(inp: &'b Inputs<'a>, x: u32, y: u32, o: usize, stroke: f32) -> Self {
-        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), tape: Tape::Off }
+        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), tape: Tape::Off, pats: BandPatterns::default() }
     }
 
     /// Run `f` with `tape` as this texel's tape.
@@ -1457,7 +1463,6 @@ impl<'a, 'b> Texel<'a, 'b> {
                 texturecraft_core::gradient(ramp, lightness).unwrap_or_default()
             }
             Source::Procedural { pattern, low, high, ramp } => {
-                let (coords, projection, _) = self.projected(projection);
                 let pixels = if pattern.resolution.can_reduce() {
                     let uv_tile = self.inp.tile_res_at(self.x, self.y);
                     let texture_set = self.inp.project.texture_set(self.inp.ts).map_or(uv_tile, |set| set.resolution);
@@ -1465,7 +1470,15 @@ impl<'a, 'b> Texel<'a, 'b> {
                 } else {
                     None
                 };
-                let amount = procedural_in(pattern, projection, &coords, &PatternContext { pixels, images: Some(self.inp.images) });
+                let amount = match self.pats.get(pattern, projection, pixels, self.o) {
+                    Some(amount) => amount,
+                    None => {
+                        let (coords, projected, _) = self.projected(projection);
+                        let amount = procedural_in(pattern, projected, &coords, &PatternContext { pixels, images: Some(self.inp.images) });
+                        self.pats.put(pattern, projection, pixels, self.o, amount);
+                        amount
+                    }
+                };
 
                 if kind == ChannelKind::Color && !ramp.is_empty() {
                     texturecraft_core::gradient(ramp, amount).unwrap_or_default()
@@ -2178,6 +2191,12 @@ fn composite_block(
     let level_count = split.map_or(0, <[Level]>::len);
     let defaults: Acc = Channel::ALL.map(Channel::default_value);
 
+    // The pattern cache's guard: values hold for this layout and these mesh bounds only.
+    let salt: std::sync::Arc<str> = format!("{}x{}|{:?}", inp.gbuf.width, inp.gbuf.height, inp.bounds).into();
+    if let Some(patterns) = inp.patterns {
+        patterns.begin_pass();
+    }
+
     // Tiles split into bands of rows, so a handful of tiles still keeps every thread busy.
     let bands = TILE / BAND;
     let tasks: Vec<((u32, u32), u32)> = tiles.iter().flat_map(|t| (0..bands).map(move |b| (*t, b))).collect();
@@ -2210,6 +2229,7 @@ fn composite_block(
             let preview_tile = inp.preview.and_then(|p| p.alpha.tile(tx, ty));
             let mut channel_buffers: Vec<Vec<u16>> = channels.iter().map(|c| vec![0u16; rows * c.components()]).collect();
             let mut anchors = Vec::new();
+            let mut pats = BandPatterns::new(inp.patterns, inp.images, salt.clone(), (tx, ty), band, (band * BAND * TILE) as usize, rows);
             let mut any = false;
             for ly in band * BAND..(band + 1) * BAND {
                 let y = ty * TILE + ly;
@@ -2230,8 +2250,9 @@ fn composite_block(
                         any = true;
                         let mut texel = Texel::new(inp, x, y, tile_offset, stroke_at(preview_tile, tile_offset));
 
-                        // Reuse one anchor buffer per band.
+                        // Reuse one anchor buffer and the pattern values per band.
                         texel.anchors = std::mem::take(&mut anchors);
+                        texel.pats = std::mem::take(&mut pats);
                         match &levels {
                             Some(levels) => {
                                 // The texel's stream starts with the stack at each level.
@@ -2258,6 +2279,7 @@ fn composite_block(
                         }
                         anchors = texel.anchors;
                         anchors.clear();
+                        pats = texel.pats;
                     }
                     for (l, buf) in lanes.iter().zip(&mut channel_buffers) {
                         let v = acc.get(l.ch).copied().unwrap_or([0.0; 3]);
@@ -2270,6 +2292,7 @@ fn composite_block(
                     }
                 }
             }
+            pats.publish();
             let cache = if let Tape::Record(t) = tape { Some(t) } else { None };
             (channel_buffers, cache, any)
         })
@@ -2825,6 +2848,7 @@ mod tests {
             preview,
             images: &images,
             bounds: f.mesh.bounds(),
+            patterns: None,
         };
         let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), 64);
         composite_tiles(&inp, &mut out, &all_tiles(64, 64));
@@ -2852,6 +2876,7 @@ mod tests {
             preview: None,
             images: &images,
             bounds: fixture.mesh.bounds(),
+            patterns: None,
         };
 
         assert_eq!(inputs.tile_res_at(0, 0), 64);
@@ -2908,6 +2933,7 @@ mod tests {
                     preview: None,
                     images: &images,
                     bounds: fixture.mesh.bounds(),
+                    patterns: None,
                 };
                 let mut output = Composite::new(&fixture.project.texture_sets[0].channel_list(), resolution);
                 let mut cache = BelowCache::default();
@@ -3047,6 +3073,7 @@ mod tests {
             preview: None,
             images: &images,
             bounds: fixture.mesh.bounds(),
+            patterns: None,
         };
         let sparse = mask_at(&inputs, layer, texels);
         let image = mask_image(&inputs, layer, fixture.gbuf.width);
@@ -3121,6 +3148,7 @@ mod tests {
             preview: None,
             images: &images,
             bounds: fixture.mesh.bounds(),
+            patterns: None,
         };
         let sampled_texels: Vec<_> = (0..64).flat_map(|y| (0..64).map(move |x| (x * 2, y))).collect();
 
@@ -3268,6 +3296,7 @@ mod tests {
             preview: None,
             images: &images,
             bounds: fixture.mesh.bounds(),
+            patterns: None,
         };
         mask_at(&inputs, layer, &xs.map(|x| (x, 128)).collect::<Vec<_>>()).unwrap()
     }
@@ -3723,6 +3752,7 @@ soft {soft:?}"
             preview: None,
             images: &images,
             bounds: f.mesh.bounds(),
+            patterns: None,
         };
         let flat = flatten_layer(&inp, id, &all_tiles(64, 64)).unwrap();
         assert!(flat.iter().all(|(c, _, _)| *c == Channel::Roughness));
@@ -3934,6 +3964,7 @@ soft {soft:?}"
                 preview: None,
                 images: &images,
                 bounds: f.mesh.bounds(),
+                patterns: None,
             };
             let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), 64);
             composite_tiles(&inp, &mut out, &all_tiles(64, 64));
@@ -3980,6 +4011,7 @@ soft {soft:?}"
             preview: None,
             images: &images,
             bounds: mesh.bounds(),
+            patterns: None,
         };
         let mut out = Composite::new(&project.texture_sets[0].channel_list(), 64);
         composite_tiles(&inp, &mut out, &all_tiles(64, 64));
@@ -4156,6 +4188,7 @@ soft {soft:?}"
                 preview: None,
                 images: &images,
                 bounds: f.mesh.bounds(),
+                patterns: None,
             };
             let mut out = Composite::new(&project.texture_sets[0].channel_list(), 64);
             composite_tiles(&inp, &mut out, &all_tiles(64, 64));

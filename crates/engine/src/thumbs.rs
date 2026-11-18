@@ -100,6 +100,7 @@ impl ThumbSnapshot {
             preview: None,
             images: &self.images,
             bounds: self.bounds,
+            patterns: None,
         };
         thumb::render(&inp, target)
     }

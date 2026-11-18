@@ -284,6 +284,11 @@ fn plane_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f
     top + (bottom - top) * fraction.y
 }
 
+/// The names of the images `pattern` reads from [`PatternContext::images`] (none but a Tile Generator's)
+pub(crate) fn image_names(pattern: &Procedural) -> impl Iterator<Item = &str> {
+    pattern.tile.as_deref().filter(|_| pattern.kind == ProceduralKind::TileGenerator).into_iter().flat_map(crate::tile_pattern::image_names)
+}
+
 /// The pattern at `point` of its plane, exactly
 fn pattern_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f32 {
     match (&pattern.tile, pattern.kind) {

@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use texturecraft_compose::{
-    BakedMaps, BelowCache, Composite, PaintTarget, PixelStore, StackKey, StrokePreview, covered_tiles, pad_tiles, stack_reads_neighbours,
+    BakedMaps, BelowCache, Composite, PATTERN_BUDGET, PaintTarget, PatternCache, PixelStore, StackKey, StrokePreview, covered_tiles, pad_tiles,
+    stack_reads_neighbours,
 };
 use texturecraft_core::{Channel, Layer, LayerId, LayerKind, Project, TextureSet};
 use texturecraft_geom::glam::Vec2;
@@ -54,6 +55,9 @@ pub struct SetCache {
     pub below: BelowCache,
     /// Tiles per composite chunk that fit the last frame's budget (0: not measured yet).
     pub chunk: usize,
+    /// Procedural pattern values of this layout, kept across composites (bakes and stack
+    /// edits leave them valid); a new layout gets a new cache with the new `SetCache`.
+    pub patterns: PatternCache,
 }
 
 impl SetCache {
@@ -76,6 +80,7 @@ impl SetCache {
             revision: 0,
             below: BelowCache::default(),
             chunk: 0,
+            patterns: PatternCache::default(),
         }
     }
 
@@ -481,7 +486,8 @@ impl Session {
         let mut camera = OrbitCamera { yaw: 0.6, pitch: 0.25, ..OrbitCamera::default() };
         let (bounds_min, bounds_max) = mesh.bounds();
         camera.frame(bounds_min, bounds_max);
-        let caches = doc.project.texture_sets.iter().map(|texture_set| SetCache::new(&mesh, texture_set)).collect();
+        let caches: Vec<SetCache> = doc.project.texture_sets.iter().map(|texture_set| SetCache::new(&mesh, texture_set)).collect();
+        share_pattern_budget(&caches);
         let selected = doc.project.texture_sets.iter().enumerate().filter_map(|(index, texture_set)| texture_set.stack.last().map(|id| (index, *id))).collect();
 
         Ok(Session {
@@ -802,6 +808,7 @@ impl Session {
                 *c = SetCache::new(&self.mesh, set);
             }
         }
+        share_pattern_budget(&self.caches);
     }
 
     /// Mark the document changed and every texture set dirty.
@@ -838,6 +845,7 @@ impl Session {
                 }
             }
         }
+        share_pattern_budget(&self.caches);
     }
 
     /// Whether a point edit, an uncommitted path preview, or a document edit can be undone
@@ -1024,6 +1032,7 @@ impl Session {
                     preview,
                     images: &self.images,
                     bounds: self.mesh.bounds(),
+                    patterns: Some(&cache.patterns),
                 };
 
                 // Look ahead so sliced updates filter a run of tiles once
@@ -1122,6 +1131,7 @@ impl Session {
             preview: None,
             images: &self.images,
             bounds: self.mesh.bounds(),
+            patterns: Some(&cache.patterns),
         })
     }
 
@@ -1155,7 +1165,7 @@ impl Session {
     /// hot-layer caches.
     pub fn memory(&self) -> Memory {
         let composites = self.caches.iter().flat_map(|c| c.composite.channels.values()).map(texturecraft_texel::TileImage::bytes).sum();
-        Memory { pixels: self.doc.pixels.bytes(), composites, cache: self.caches.iter().map(|c| c.below.bytes()).sum() }
+        Memory { pixels: self.doc.pixels.bytes(), composites, cache: self.caches.iter().map(|c| c.below.bytes() + c.patterns.bytes()).sum() }
     }
 }
 
@@ -1266,6 +1276,15 @@ pub(crate) fn detect_uv_tiles(mesh: &Mesh, m: usize, mode: Option<bool>, log: &m
     }
 }
 
+/// One pattern-cache budget for the whole session: every texture set may hold its share, so a
+/// project with many sets cannot hold [`PATTERN_BUDGET`] per set.
+pub(crate) fn share_pattern_budget(caches: &[SetCache]) {
+    let share = PATTERN_BUDGET / caches.len().max(1);
+    for c in caches {
+        c.patterns.set_budget(share);
+    }
+}
+
 /// Where texture set `t`'s UV tiles sit in its atlas (the mesh maps its UVs by this).
 pub(crate) fn uv_layout(t: &TextureSet) -> (usize, Vec<(u32, f32)>) {
     (t.material, t.uv_tiles.iter().map(|u| (*u, t.tile_scale(*u))).collect())
@@ -1291,4 +1310,41 @@ fn tiled_mesh(source: &Arc<Mesh>, project: &Project) -> Arc<Mesh> {
         }
     }
     Arc::new(mesh)
+}
+
+#[cfg(test)]
+mod pattern_budget_tests {
+    use super::*;
+
+    #[test]
+    fn texture_sets_share_one_pattern_budget() {
+        let mesh = texturecraft_geom::primitives::plane(2.0, 4);
+        let caches: Vec<SetCache> = (0..4).map(|i| SetCache::new(&mesh, &TextureSet::new(format!("set{i}"), 0, 64))).collect();
+        assert!(caches.iter().all(|c| c.patterns.budget() == PATTERN_BUDGET), "a lone cache starts with the whole budget");
+        share_pattern_budget(&caches);
+        let total: usize = caches.iter().map(|c| c.patterns.budget()).sum();
+        assert!(total <= PATTERN_BUDGET && total > PATTERN_BUDGET - 4, "{total}");
+        share_pattern_budget(caches.get(..1).unwrap_or_default());
+        assert_eq!(caches[0].patterns.budget(), PATTERN_BUDGET);
+        share_pattern_budget(&[]);
+    }
+
+    #[test]
+    fn a_session_with_many_texture_sets_keeps_to_one_pattern_budget() {
+        let mut s = Session::new_project("t", texturecraft_geom::primitives::plane(2.0, 4), "builtin:test", None, 128).unwrap();
+        for i in 1..10 {
+            s.doc.project.texture_sets.push(TextureSet::new(format!("set{i}"), 0, 64));
+        }
+        s.sync_caches();
+        assert_eq!(s.caches.len(), 10);
+        let total = |s: &Session| s.caches.iter().map(|c| c.patterns.budget()).sum::<usize>();
+        assert!(total(&s) <= PATTERN_BUDGET && total(&s) > PATTERN_BUDGET - 10, "ten sets hold {} of {PATTERN_BUDGET}", total(&s));
+        // Fewer sets, a larger share each; a set added later takes its share from the others.
+        s.doc.project.texture_sets.truncate(2);
+        s.sync_caches();
+        assert!(s.caches.iter().all(|c| c.patterns.budget() == PATTERN_BUDGET / 2));
+        s.doc.project.texture_sets.push(TextureSet::new("again", 0, 128));
+        s.sync_caches();
+        assert!(total(&s) <= PATTERN_BUDGET && s.caches.iter().all(|c| c.patterns.budget() == PATTERN_BUDGET / 3));
+    }
 }

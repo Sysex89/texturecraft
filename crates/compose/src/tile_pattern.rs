@@ -342,6 +342,12 @@ fn line_shift(tile: &TileGenerator, line: i32) -> f32 {
     tile.offset * line as f32 + tile.offset_random * TileRandomStream::Offset.draw(tile.offset_random_seed, line as u32)
 }
 
+/// Every image name [`value`] may read: its inputs (whatever the shape) and its background. The
+/// pattern cache keys values by these images, so a name `value` reads must be listed here.
+pub(crate) fn image_names(tile: &TileGenerator) -> impl Iterator<Item = &str> {
+    tile.inputs.iter().take(TileGenerator::MAX_INPUTS).map(String::as_str).chain(tile.background_image.as_deref())
+}
+
 /// The pattern's value at `point` of its plane (one unit = the whole grid, repeating); `images` holds the images its inputs name
 pub(crate) fn value(tile: &TileGenerator, point: Vec2, seed: u32, images: Option<&ImageStore>) -> f32 {
     let image = |name: &str| images.and_then(|images| images.get(name)).map(|image| &**image);

@@ -209,7 +209,12 @@ fn inspect_reports_the_tile_settings_and_a_patterns_resolution() {
 
 /// Imports a small gray PNG as resource `name` and returns its resource name
 fn import_gray(session: &mut Session, name: &str) -> String {
-    let image = image::RgbaImage::from_pixel(4, 4, image::Rgba([128, 128, 128, 255]));
+    import_shade(session, name, 128)
+}
+
+/// Imports a small PNG of gray `shade` as resource `name` and returns its resource name
+fn import_shade(session: &mut Session, name: &str, shade: u8) -> String {
+    let image = image::RgbaImage::from_pixel(4, 4, image::Rgba([shade, shade, shade, 255]));
     let mut bytes = Vec::new();
     image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
     session.import_resource_bytes(name, bytes).unwrap()
@@ -264,6 +269,31 @@ fn importing_the_image_a_tile_generator_names_redraws_it() {
     let after = base_colors(&mut session);
 
     assert_ne!(before, after, "the image that arrived later reaches the texture");
+}
+
+#[test]
+fn an_image_replaced_under_the_same_name_redraws_the_tile_generator() {
+    // A session that only ever saw the second image
+    let mut fresh = session();
+    tile_fill(&mut fresh);
+    execute(&mut fresh, "layer.fill.set", &json!({"channel": "baseColor", "tile": {"shape": "Image", "inputs": ["plate.png"], "amount": [1, 1]}})).unwrap();
+    assert_eq!(import_shade(&mut fresh, "plate.png", 230), "plate.png");
+    let want = base_colors(&mut fresh);
+
+    // The first image is composited (and its pattern values cached), then removed, and another
+    // file is imported under the same name
+    let mut session = session();
+    import_shade(&mut session, "plate.png", 40);
+    tile_fill(&mut session);
+    execute(&mut session, "layer.fill.set", &json!({"channel": "baseColor", "tile": {"shape": "Image", "inputs": ["plate.png"], "amount": [1, 1]}})).unwrap();
+    let first = base_colors(&mut session);
+    assert!(session.memory().cache > 0, "the pattern is cached");
+    execute(&mut session, "resource.remove", &json!({"name": "plate.png"})).unwrap();
+    assert_eq!(import_shade(&mut session, "plate.png", 230), "plate.png");
+    let after = base_colors(&mut session);
+
+    assert_ne!(first, want, "the two images draw differently");
+    assert_eq!(after, want, "the replaced image reaches the texture, not the first image's cached pattern");
 }
 
 #[test]

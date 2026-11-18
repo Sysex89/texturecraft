@@ -53,6 +53,7 @@ fn inputs<'a>(s: &'a Session, project: &'a texturecraft_engine::core::Project, g
         preview: None,
         images: &s.images,
         bounds: s.mesh.bounds(),
+        patterns: None,
     }
 }
 

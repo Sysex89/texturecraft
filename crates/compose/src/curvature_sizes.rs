@@ -288,6 +288,7 @@ mod tests {
             preview: None,
             images: &images,
             bounds: mesh.bounds(),
+            patterns: None,
         };
 
         for size in [(32, 32), (64, 64), (128, 128), (128, 32)] {
@@ -328,6 +329,7 @@ mod tests {
             preview: None,
             images: &images,
             bounds: mesh.bounds(),
+            patterns: None,
         };
 
         let covered = covered_texels(&inputs, (384, 128));

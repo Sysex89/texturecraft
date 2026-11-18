@@ -4,10 +4,13 @@
 
 use std::collections::BTreeMap;
 
-use texturecraft_compose::{BelowCache, Composite, Inputs, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached};
+use texturecraft_compose::{
+    BelowCache, Composite, ImageRes, ImageStore, Inputs, PaintTarget, PatternCache, PixelStore, StrokePreview, all_tiles, composite_tiles,
+    composite_tiles_cached,
+};
 use texturecraft_core::{
     BakedMap, BlendMode, Channel, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground,
-    Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
+    Procedural, ProceduralKind, Project, Projection, Source, TextureSet, TileGenerator, TileShape,
 };
 use texturecraft_geom::{Mesh, UvGBuffer, primitives};
 use texturecraft_texel::{TILE, TileImage, to_u16};
@@ -101,6 +104,7 @@ fn inputs<'a>(f: &'a Fixture, ts: usize, images: &'a texturecraft_compose::Image
         preview: None,
         images,
         bounds: f.mesh.bounds(),
+        patterns: None,
     }
 }
 
@@ -159,6 +163,88 @@ fn below_cache_and_blocks_match_the_full_composite_exactly() {
     run(&f, 0, &all_tiles(RES, RES), Some(&mut cache));
     assert!(!cache.is_empty());
     assert!(run(&f, 0, &all_tiles(RES, RES), Some(&mut cache)) == reference(&f, 0));
+}
+
+/// Composite set 0 over every tile with `images`, through `patterns` (and optionally the below cache).
+fn run_patterns(f: &Fixture, images: &ImageStore, patterns: Option<&PatternCache>, below: Option<&mut BelowCache>) -> Composite {
+    let baked = Default::default();
+    let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), RES);
+    let inp = Inputs { patterns, ..inputs(f, 0, images, &baked) };
+    match below {
+        Some(below) => composite_tiles_cached(&inp, &mut out, &all_tiles(RES, RES), Some(below)),
+        None if patterns.is_some() => composite_tiles_cached(&inp, &mut out, &all_tiles(RES, RES), None),
+        None => composite_tiles(&inp, &mut out, &all_tiles(RES, RES)),
+    }
+    out
+}
+
+#[test]
+fn pattern_cache_composites_exactly_and_never_serves_an_edited_pattern() {
+    let mut f = fixture();
+    let top = heavy_stack(&mut f);
+    let images = ImageStore::new();
+    let want = reference(&f, 0);
+    let patterns = PatternCache::default();
+    assert!(run_patterns(&f, &images, Some(&patterns), None) == want, "a composite filling the pattern cache differs");
+    assert!(!patterns.is_empty(), "procedural fills are cached");
+    let bytes = patterns.bytes();
+    assert!(run_patterns(&f, &images, Some(&patterns), None) == want, "a composite from cached patterns differs");
+    assert_eq!(patterns.bytes(), bytes, "nothing new to cache the second time");
+    // With the below cache too, cold and warm.
+    let mut below = BelowCache::default();
+    below.set_hot(Some(top));
+    assert!(run_patterns(&f, &images, Some(&patterns), Some(&mut below)) == want);
+    assert!(run_patterns(&f, &images, Some(&patterns), Some(&mut below)) == want);
+    // An edited pattern is another pattern: its old values are never used.
+    let low = f.project.texture_sets[0].stack[0];
+    if let LayerKind::Fill(fl) = &mut f.project.layer_mut(low).unwrap().kind
+        && let Some(Source::Procedural { pattern, .. }) = fl.sources.get_mut(&Channel::BaseColor)
+    {
+        pattern.scale *= 3.0;
+        pattern.seed += 1;
+    }
+    let want = reference(&f, 0);
+    assert!(run_patterns(&f, &images, Some(&patterns), None) == want, "an edited pattern was served stale values");
+    // A budget smaller than the set keeps what fits and still composites exactly.
+    let small = PatternCache::with_budget(bytes / 4);
+    for _ in 0..3 {
+        assert!(run_patterns(&f, &images, Some(&small), None) == want, "a composite under a small budget differs");
+        assert!(small.bytes() <= small.budget());
+    }
+}
+
+/// An image of `size`² texels, `v` on the left half and `1 - v` on the right.
+fn halves(v: f32) -> std::sync::Arc<ImageRes> {
+    let size = 16;
+    let rgba = (0..size * size).map(|i| if i % size < size / 2 { [v, v, v, 1.0] } else { [1.0 - v, 1.0 - v, 1.0 - v, 1.0] }).collect();
+    std::sync::Arc::new(ImageRes { width: size as u32, height: size as u32, rgba, srgb: false })
+}
+
+#[test]
+fn pattern_cache_follows_images_replaced_under_the_same_name() {
+    let mut f = fixture();
+    let tile = TileGenerator { shape: TileShape::Image, amount: [3, 3], inputs: vec!["stone".into()], ..TileGenerator::default() };
+    let pattern = Procedural { tile: Some(Box::new(tile)), ..Procedural::new(ProceduralKind::TileGenerator) };
+    let source = Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() };
+    add(&mut f, 0, fill(&[(Channel::BaseColor, source)]), None);
+    let patterns = PatternCache::default();
+
+    let dark: ImageStore = [("stone".to_string(), halves(0.1))].into_iter().collect();
+    let want_dark = run_patterns(&f, &dark, None, None);
+    assert!(run_patterns(&f, &dark, Some(&patterns), None) == want_dark);
+    assert!(!patterns.is_empty(), "the Tile Generator is cached");
+
+    // The resource is replaced (re-imported or relinked): the same name, other pixels.
+    let bright: ImageStore = [("stone".to_string(), halves(0.8))].into_iter().collect();
+    let want_bright = run_patterns(&f, &bright, None, None);
+    assert!(want_bright != want_dark, "the fixture shows the image");
+    assert!(run_patterns(&f, &bright, Some(&patterns), None) == want_bright, "a replaced image was served the old image's values");
+
+    // And removed: the pattern draws without it, not from the cache.
+    let none = ImageStore::new();
+    assert!(run_patterns(&f, &none, Some(&patterns), None) == run_patterns(&f, &none, None, None), "a removed image was served cached values");
+    // Back to the first image (still the same allocation): its values are served again, exactly.
+    assert!(run_patterns(&f, &dark, Some(&patterns), None) == want_dark);
 }
 
 #[test]
